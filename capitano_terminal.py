@@ -64,7 +64,7 @@ AUTO_REFRESH_SECONDS = 60
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="GEXRADAR", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="CAPITANO TERMINAL", layout="wide", initial_sidebar_state="expanded")
 
 if "current_page" not in st.session_state:
     st.session_state.current_page = "DASHBOARD"
@@ -666,7 +666,7 @@ _components.html(f"""
 <div class="nav-bar">
   <div class="nav-wordmark">
     <span class="nav-pip"></span>
-    <span><span class="nav-word">GEX</span><span class="nav-accent">RADAR</span></span>
+    <span><span class="nav-word">CAPITANO</span><span class="nav-accent">TERMINAL</span></span>
   </div>
   <div class="nav-right">
     <div class="nav-status">
