@@ -2544,7 +2544,411 @@ window.addEventListener('load', function() {
 </body>
 </html>"""
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPECTED MOVE
+# ─────────────────────────────────────────────────────────────────────────────
+def _render_expected_move(ticker: str, spot: float, df_gex, raw_df: pd.DataFrame, T: dict):
+    """
+    Expected Move tab — IV-derived price range projections.
 
+    For each expiration we compute:
+      EM_1σ = spot × atm_iv × √(dte/365)   [68% probability range]
+      EM_2σ = EM_1σ × 2                     [95% probability range]
+
+    We also show the straddle price (call_atm + put_atm) which is the market's
+    direct dollar estimate of the expected move for that expiry.
+    """
+
+    # ── Gather per-expiry data ─────────────────────────────────────────────
+    if raw_df.empty:
+        st.warning("No options data available for Expected Move calculation.")
+        return
+
+    today = datetime.date.today()
+
+    def _dte(exp_str):
+        return max((datetime.datetime.strptime(exp_str, "%Y-%m-%d").date() - today).days, 0)
+
+    exps = sorted(raw_df["expiry"].unique(), key=_dte)
+
+    exp_rows = []
+    for exp in exps:
+        d = raw_df[raw_df["expiry"] == exp].copy()
+        dte_v = _dte(exp)
+        if dte_v > 90:
+            continue
+
+        # ATM IV: use calls nearest to spot
+        calls = d[d["flag"] == "C"].copy()
+        calls["_dist"] = (calls["strike"] - spot).abs()
+        atm_calls = calls.nsmallest(3, "_dist")
+        atm_iv = float(atm_calls["iv"].mean()) if not atm_calls.empty else 0.0
+        if atm_iv < 0.005:
+            continue
+
+        # 1σ and 2σ expected moves
+        T_frac = max(dte_v, 0.5) / 365.0
+        em_1s = spot * atm_iv * math.sqrt(T_frac)
+        em_2s = em_1s * 2.0
+
+        # Straddle price: ATM call + ATM put bid/ask mid
+        atm_strike = float(atm_calls.nsmallest(1, "_dist")["strike"].iloc[0]) if not atm_calls.empty else spot
+        strad_call = d[(d["flag"] == "C") & (d["strike"] == atm_strike)]
+        strad_put  = d[(d["flag"] == "P") & (d["strike"] == atm_strike)]
+        call_mid   = float(strad_call["last_price"].mean()) if not strad_call.empty else 0.0
+        put_mid    = float(strad_put["last_price"].mean())  if not strad_put.empty  else 0.0
+        straddle   = call_mid + put_mid
+
+        # OI-weighted IV across all strikes for this expiry
+        d_oi = d[d["open_interest"] > 0].copy()
+        if not d_oi.empty and d_oi["open_interest"].sum() > 0:
+            w_iv = float(np.average(d_oi["iv"], weights=d_oi["open_interest"]))
+        else:
+            w_iv = atm_iv
+
+        exp_rows.append({
+            "exp":        exp,
+            "dte":        dte_v,
+            "atm_iv":     atm_iv,
+            "w_iv":       w_iv,
+            "em_1s":      em_1s,
+            "em_2s":      em_2s,
+            "em_1s_pct":  em_1s / spot * 100,
+            "em_2s_pct":  em_2s / spot * 100,
+            "hi_1s":      spot + em_1s,
+            "lo_1s":      spot - em_1s,
+            "hi_2s":      spot + em_2s,
+            "lo_2s":      spot - em_2s,
+            "straddle":   straddle,
+            "strad_pct":  straddle / spot * 100 if spot > 0 else 0.0,
+        })
+
+    if not exp_rows:
+        st.warning("No valid ATM IV found for any expiration.")
+        return
+
+    exp_df = pd.DataFrame(exp_rows)
+
+    # ── Header metrics strip ───────────────────────────────────────────────
+    nearest = exp_df.iloc[0]
+    n_dte   = int(nearest["dte"])
+    n_iv    = nearest["atm_iv"] * 100
+    n_em1   = nearest["em_1s"]
+    n_em1p  = nearest["em_1s_pct"]
+    n_strad = nearest["straddle"]
+
+    def _card(label, value, color, sub=""):
+        return f"""
+        <div style="flex:1;min-width:110px;background:{T['bg1']};border:1px solid {T['line2']};
+                    border-radius:6px;padding:11px 15px;border-top:2px solid {color};">
+          <div style="font-family:'Barlow',sans-serif;font-size:8px;font-weight:600;
+                      color:{T['t3']};letter-spacing:2px;text-transform:uppercase;
+                      margin-bottom:6px;">{label}</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:500;
+                      color:{color};letter-spacing:-0.5px;">{value}</div>
+          {f'<div style="font-size:8px;color:{T["t3"]};margin-top:3px;">{sub}</div>' if sub else ''}
+        </div>"""
+
+    cards = ""
+    cards += _card("ATM IV",        f"{n_iv:.1f}%",           T["amber"],  f"nearest exp · {n_dte}DTE")
+    cards += _card("1σ Move",       f"±${n_em1:.2f}",         T["green"],  f"±{n_em1p:.2f}%  68% prob")
+    cards += _card("2σ Move",       f"±${nearest['em_2s']:.2f}", T["blue"], f"±{nearest['em_2s_pct']:.2f}%  95% prob")
+    cards += _card("Straddle $",    f"${n_strad:.2f}",        T["violet"], f"{nearest['strad_pct']:.2f}% of spot")
+    iv_rv  = compute_iv_rv_spread(raw_df, spot, ticker)
+    ivrv_c = T["green"] if iv_rv > 0 else T["red"]
+    cards += _card("IV − RV",       f"{iv_rv:+.1f}pp",        ivrv_c,      "ATM IV minus 20d HV")
+
+    st.markdown(f'<div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap;">{cards}</div>',
+                unsafe_allow_html=True)
+
+    # ── 1) Cone Chart — Expected Move over time ────────────────────────────
+    st.markdown(f'<div class="sub-head">Expected Move Cone</div>', unsafe_allow_html=True)
+
+    # Use the first expiry's ATM IV as the "constant" IV for the cone
+    # so the cone is smooth and not jagged from per-expiry IV changes.
+    base_iv  = float(exp_df["atm_iv"].iloc[0])
+    # Build continuous cone from 0 → max DTE across all exps
+    max_dte  = int(exp_df["dte"].max())
+    cone_dte = np.arange(0, max_dte + 2, 1)
+    cone_1s  = spot * base_iv * np.sqrt(cone_dte / 365.0)
+    cone_2s  = cone_1s * 2.0
+
+    fig_cone = go.Figure()
+
+    # 2σ band (outer, faint)
+    fig_cone.add_trace(go.Scatter(
+        x=cone_dte, y=spot + cone_2s,
+        mode="lines", line=dict(color=T["blue"], width=1, dash="dot"),
+        name="+2σ", hovertemplate="DTE %{x}<br>+2σ: $%{y:.2f}<extra></extra>",
+    ))
+    fig_cone.add_trace(go.Scatter(
+        x=cone_dte, y=spot - cone_2s,
+        mode="lines", line=dict(color=T["blue"], width=1, dash="dot"),
+        fill="tonexty",
+        fillcolor=f"rgba({int(T['blue'][1:3],16)},{int(T['blue'][3:5],16)},{int(T['blue'][5:7],16)},0.06)",
+        name="-2σ", hovertemplate="DTE %{x}<br>-2σ: $%{y:.2f}<extra></extra>",
+    ))
+
+    # 1σ band (inner)
+    fig_cone.add_trace(go.Scatter(
+        x=cone_dte, y=spot + cone_1s,
+        mode="lines", line=dict(color=T["green"], width=1.5, dash="dash"),
+        name="+1σ", hovertemplate="DTE %{x}<br>+1σ: $%{y:.2f}<extra></extra>",
+    ))
+    fig_cone.add_trace(go.Scatter(
+        x=cone_dte, y=spot - cone_1s,
+        mode="lines", line=dict(color=T["red"], width=1.5, dash="dash"),
+        fill="tonexty",
+        fillcolor=f"rgba({int(T['green'][1:3],16)},{int(T['green'][3:5],16)},{int(T['green'][5:7],16)},0.08)",
+        name="-1σ", hovertemplate="DTE %{x}<br>-1σ: $%{y:.2f}<extra></extra>",
+    ))
+
+    # Spot line
+    fig_cone.add_hline(y=spot, line_color=T["t1"], line_width=1.5,
+                       annotation_text=f"  Spot ${spot:.2f}",
+                       annotation_font_color=T["t1"], annotation_font_size=9)
+
+    # Expiry marker pins
+    for _, row in exp_df.iterrows():
+        _x = int(row["dte"])
+        _hi = row["hi_1s"]
+        _lo = row["lo_1s"]
+        fig_cone.add_shape(type="line", x0=_x, x1=_x, y0=_lo, y1=_hi,
+                           line=dict(color=T["amber"], width=1, dash="dot"))
+        fig_cone.add_trace(go.Scatter(
+            x=[_x], y=[_hi],
+            mode="markers+text",
+            marker=dict(color=T["amber"], size=7, line=dict(color=T["bg"], width=1.5)),
+            text=[row["exp"][5:]],
+            textposition="top center",
+            textfont=dict(size=8, color=T["amber"], family="JetBrains Mono"),
+            hovertemplate=f"<b>{row['exp']}</b>  {_x}DTE<br>"
+                          f"ATM IV: {row['atm_iv']*100:.1f}%<br>"
+                          f"1σ ±${row['em_1s']:.2f} (±{row['em_1s_pct']:.2f}%)<br>"
+                          f"2σ ±${row['em_2s']:.2f} (±{row['em_2s_pct']:.2f}%)<br>"
+                          f"Straddle: ${row['straddle']:.2f}<extra></extra>",
+            showlegend=False,
+        ))
+        fig_cone.add_trace(go.Scatter(
+            x=[_x], y=[_lo],
+            mode="markers",
+            marker=dict(color=T["red"], size=7, line=dict(color=T["bg"], width=1.5)),
+            hoverinfo="skip", showlegend=False,
+        ))
+
+    fig_cone.update_layout(
+        **PLOTLY_BASE,
+        height=340,
+        showlegend=True,
+        legend=dict(orientation="h", y=1.08, x=0,
+                    font=dict(size=9, color=TEXT2, family="JetBrains Mono"),
+                    bgcolor="rgba(0,0,0,0)"),
+        margin=dict(t=20, r=90, b=50, l=60),
+        xaxis=dict(
+            title=dict(text="Days to Expiration", font=dict(size=9, color=TEXT3)),
+            gridcolor=LINE, gridwidth=1, zerolinecolor=LINE2,
+            tickfont=dict(size=9, family="JetBrains Mono"),
+        ),
+        yaxis=dict(
+            title=dict(text="Price", font=dict(size=9, color=TEXT3)),
+            gridcolor=LINE, gridwidth=1, tickprefix="$",
+            tickfont=dict(size=9, family="JetBrains Mono"),
+        ),
+        hoverlabel=dict(bgcolor=T["bg2"], bordercolor=T["line_bright"],
+                        font=dict(family="JetBrains Mono", size=10, color=T["t1"])),
+    )
+    st.plotly_chart(fig_cone, use_container_width=True, config={"displayModeBar": False})
+
+    # ── 2) Per-Expiry Price Ladder ─────────────────────────────────────────
+    st.markdown(f'<div class="sub-head">Per-Expiry Expected Range</div>', unsafe_allow_html=True)
+
+    fig_lad = go.Figure()
+    exp_labels = [f"{row['exp'][5:]}  {int(row['dte'])}d" for _, row in exp_df.iterrows()]
+    exp_idx    = list(range(len(exp_df)))
+
+    # 2σ bars (background, faint)
+    for i, (_, row) in enumerate(exp_df.iterrows()):
+        fig_lad.add_shape(type="rect",
+            x0=row["lo_2s"], x1=row["hi_2s"], y0=i - 0.35, y1=i + 0.35,
+            fillcolor=f"rgba({int(T['blue'][1:3],16)},{int(T['blue'][3:5],16)},{int(T['blue'][5:7],16)},0.10)",
+            line=dict(color=T["blue"], width=1, dash="dot"),
+        )
+        # 1σ bar (inner)
+        fig_lad.add_shape(type="rect",
+            x0=row["lo_1s"], x1=row["hi_1s"], y0=i - 0.22, y1=i + 0.22,
+            fillcolor=f"rgba({int(T['green'][1:3],16)},{int(T['green'][3:5],16)},{int(T['green'][5:7],16)},0.14)",
+            line=dict(color=T["green"], width=1.2),
+        )
+        # Straddle price markers
+        if row["straddle"] > 0:
+            fig_lad.add_shape(type="line",
+                x0=spot - row["straddle"], x1=spot - row["straddle"],
+                y0=i - 0.35, y1=i + 0.35,
+                line=dict(color=T["violet"], width=1.5, dash="dot"),
+            )
+            fig_lad.add_shape(type="line",
+                x0=spot + row["straddle"], x1=spot + row["straddle"],
+                y0=i - 0.35, y1=i + 0.35,
+                line=dict(color=T["violet"], width=1.5, dash="dot"),
+            )
+
+    # Invisible hover traces
+    for i, (_, row) in enumerate(exp_df.iterrows()):
+        strad_note = f"${row['straddle']:.2f} straddle ({row['strad_pct']:.2f}%)" if row["straddle"] > 0 else "no straddle data"
+        for px, lbl in [(row["hi_1s"], "+1σ"), (row["lo_1s"], "-1σ"),
+                        (row["hi_2s"], "+2σ"), (row["lo_2s"], "-2σ")]:
+            fig_lad.add_trace(go.Scatter(
+                x=[px], y=[i],
+                mode="markers",
+                marker=dict(
+                    color=T["green"] if "+" in lbl else T["red"],
+                    size=9, symbol="line-ns",
+                    line=dict(width=2, color=T["green"] if "+" in lbl else T["red"]),
+                ),
+                hovertemplate=(
+                    f"<b>{row['exp']}  {int(row['dte'])}DTE</b><br>"
+                    f"ATM IV: {row['atm_iv']*100:.1f}%<br>"
+                    f"1σ: ${row['lo_1s']:.2f} ↔ ${row['hi_1s']:.2f}  (±{row['em_1s_pct']:.2f}%)<br>"
+                    f"2σ: ${row['lo_2s']:.2f} ↔ ${row['hi_2s']:.2f}  (±{row['em_2s_pct']:.2f}%)<br>"
+                    f"Straddle: {strad_note}"
+                    "<extra></extra>"
+                ),
+                showlegend=False,
+            ))
+
+    # Spot vertical line
+    fig_lad.add_vline(x=spot, line_color=T["t1"], line_width=2,
+                      annotation_text=f"  Spot ${spot:.2f}",
+                      annotation_font_color=T["t1"], annotation_font_size=9)
+
+    all_prices = []
+    for _, row in exp_df.iterrows():
+        all_prices += [row["lo_2s"], row["hi_2s"]]
+    x_pad = (max(all_prices) - min(all_prices)) * 0.08
+
+    fig_lad.update_layout(
+        **PLOTLY_BASE,
+        height=max(260, len(exp_df) * 70 + 80),
+        margin=dict(t=10, r=90, b=50, l=60),
+        xaxis=dict(
+            title=dict(text="Price", font=dict(size=9, color=TEXT3)),
+            range=[min(all_prices) - x_pad, max(all_prices) + x_pad],
+            gridcolor=LINE, gridwidth=1, zerolinecolor=LINE2, tickprefix="$",
+            tickfont=dict(size=9, family="JetBrains Mono"),
+        ),
+        yaxis=dict(
+            tickvals=exp_idx, ticktext=exp_labels,
+            tickfont=dict(size=9, family="JetBrains Mono"),
+            gridcolor=LINE, gridwidth=1,
+        ),
+        hoverlabel=dict(bgcolor=T["bg2"], bordercolor=T["line_bright"],
+                        font=dict(family="JetBrains Mono", size=10, color=T["t1"])),
+    )
+    st.plotly_chart(fig_lad, use_container_width=True, config={"displayModeBar": False})
+
+    # ── 3) IV Term Structure ───────────────────────────────────────────────
+    st.markdown(f'<div class="sub-head">IV Term Structure</div>', unsafe_allow_html=True)
+
+    fig_ts = go.Figure()
+    ts_colors = [T["green"] if iv <= float(exp_df["atm_iv"].iloc[0]) * 1.05
+                 else T["amber"]
+                 for iv in exp_df["atm_iv"]]
+
+    fig_ts.add_trace(go.Scatter(
+        x=exp_df["dte"].tolist(),
+        y=(exp_df["atm_iv"] * 100).tolist(),
+        mode="lines+markers",
+        line=dict(color=T["t3"], width=1.2),
+        marker=dict(color=ts_colors, size=9, line=dict(color=T["bg"], width=1.5)),
+        name="ATM IV",
+        customdata=np.stack([exp_df["exp"], exp_df["em_1s_pct"]], axis=1),
+        hovertemplate=(
+            "<b>%{customdata[0]}</b>  %{x}DTE<br>"
+            "ATM IV: <b>%{y:.2f}%</b><br>"
+            "1σ move: ±%{customdata[1]:.2f}%"
+            "<extra></extra>"
+        ),
+    ))
+    fig_ts.add_trace(go.Scatter(
+        x=exp_df["dte"].tolist(),
+        y=(exp_df["w_iv"] * 100).tolist(),
+        mode="lines",
+        line=dict(color=T["violet"], width=1, dash="dot"),
+        name="OI-Wtd IV",
+        hovertemplate="OI-weighted IV: %{y:.2f}%<extra></extra>",
+    ))
+
+    # Horizontal reference: current ATM IV
+    fig_ts.add_hline(y=float(exp_df["atm_iv"].iloc[0]) * 100,
+                     line_dash="dot", line_color=T["t3"], line_width=1,
+                     annotation_text=f"  Near ATM IV {float(exp_df['atm_iv'].iloc[0])*100:.1f}%",
+                     annotation_font_color=T["t3"], annotation_font_size=9)
+
+    fig_ts.update_layout(
+        **PLOTLY_BASE,
+        height=240,
+        showlegend=True,
+        legend=dict(orientation="h", y=1.12, x=0,
+                    font=dict(size=9, color=TEXT2, family="JetBrains Mono"),
+                    bgcolor="rgba(0,0,0,0)"),
+        margin=dict(t=20, r=90, b=50, l=60),
+        xaxis=dict(
+            title=dict(text="Days to Expiration", font=dict(size=9, color=TEXT3)),
+            gridcolor=LINE, gridwidth=1,
+            tickfont=dict(size=9, family="JetBrains Mono"),
+        ),
+        yaxis=dict(
+            title=dict(text="IV (%)", font=dict(size=9, color=TEXT3)),
+            gridcolor=LINE, gridwidth=1,
+            tickfont=dict(size=9, family="JetBrains Mono"),
+            ticksuffix="%",
+        ),
+        hoverlabel=dict(bgcolor=T["bg2"], bordercolor=T["line_bright"],
+                        font=dict(family="JetBrains Mono", size=10, color=T["t1"])),
+    )
+    st.plotly_chart(fig_ts, use_container_width=True, config={"displayModeBar": False})
+
+    # ── 4) Summary Table ───────────────────────────────────────────────────
+    st.markdown(f'<div class="sub-head">Expected Move Summary</div>', unsafe_allow_html=True)
+    tbl = exp_df[["exp","dte","atm_iv","em_1s","em_1s_pct","em_2s","em_2s_pct","straddle","strad_pct"]].copy()
+    tbl.columns = ["Expiry","DTE","ATM IV","1σ Move $","1σ Move %","2σ Move $","2σ Move %","Straddle $","Straddle %"]
+
+    def _em_style(val):
+        _ts = get_theme()
+        return f"color:{_ts['green']};"
+
+    st.dataframe(
+        tbl.style
+           .format({
+               "ATM IV":     "{:.2%}",
+               "1σ Move $":  "±${:.2f}",
+               "1σ Move %":  "±{:.2f}%",
+               "2σ Move $":  "±${:.2f}",
+               "2σ Move %":  "±{:.2f}%",
+               "Straddle $": "${:.2f}",
+               "Straddle %": "{:.2f}%",
+           })
+           .map(_em_style, subset=["1σ Move $","2σ Move $"]),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown(f"""
+    <div style="margin-top:12px;padding:10px 14px;background:{T['bg1']};
+                border:1px solid {T['line']};border-radius:4px;
+                border-left:3px solid {T['amber']};">
+      <div style="font-family:'Barlow',sans-serif;font-size:9px;font-weight:600;
+                  color:{T['amber']};letter-spacing:1.5px;text-transform:uppercase;
+                  margin-bottom:3px;">Methodology</div>
+      <div style="font-family:'Barlow',sans-serif;font-size:9.5px;color:{T['t2']};line-height:1.7;">
+        <b>1σ Expected Move</b> = Spot × ATM IV × √(DTE/365) &nbsp;·&nbsp; 68.3% probability range<br>
+        <b>2σ Expected Move</b> = 1σ × 2 &nbsp;·&nbsp; 95.5% probability range<br>
+        <b>Straddle price</b> = market's direct dollar estimate (ATM call mid + ATM put mid)<br>
+        <b>OI-Weighted IV</b> = IV averaged across all strikes, weighted by open interest<br>
+        IV source: CBOE delayed feed (~15 min). OI is end-of-day. Not financial advice.
+      </div>
+    </div>
+    """, unsafe_allow_html=True)
 # ─────────────────────────────────────────────────────────────────────────────
 # DASHBOARD FRAGMENT
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2729,9 +3133,9 @@ def dashboard():
     """, unsafe_allow_html=True)
 
     # ── Mode Buttons + Refresh Timer ───────────────────────────────────────
-    _modes_list  = ["GEX", "HEAT", "DAILY", "REPLAY"]
-    _labels_list = ["OI GEX", "Heatmap", "Daily Levels", "⏱ Replay"]
-    _btn_cols = st.columns([1, 1, 1, 1, 1, 1])
+     _modes_list  = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY"]
+     _labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay"]
+     _btn_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
     for _col, _mode, _lbl in zip(_btn_cols[:4], _modes_list, _labels_list):
         with _col:
             if st.button(_lbl, key=f"mode_btn_{_mode}",
@@ -3154,7 +3558,9 @@ def dashboard():
     # ── DAILY LEVELS ──────────────────────────────────────────────────────
     elif st.session_state.radar_mode == "DAILY":
         _render_daily_levels(asset_toggle, spot_price, df, raw_df, T)
-
+    # ── EXPECTED MOVE ─────────────────────────────────────────────────────
+    elif st.session_state.radar_mode == "MOVE":
+        _render_expected_move(asset_toggle, spot_price, df, raw_df, T)
     # ── REPLAY ────────────────────────────────────────────────────────────
     elif st.session_state.radar_mode == "REPLAY":
         _render_replay_view(
