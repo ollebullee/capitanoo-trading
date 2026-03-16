@@ -2543,6 +2543,418 @@ window.addEventListener('load', function() {
 </script>
 </body>
 </html>"""
+# ─────────────────────────────────────────────────────────────────────────────
+# GITHUB REPLAY STORAGE
+# ─────────────────────────────────────────────────────────────────────────────
+import json as _json
+import base64 as _base64
+
+def _gh_headers():
+    try:
+        token = st.secrets["github"]["token"]
+        return {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+    except Exception:
+        return {}
+
+def _gh_repo():
+    try:
+        return st.secrets["github"]["repo"]
+    except Exception:
+        return ""
+
+def _gh_branch():
+    try:
+        return st.secrets["github"].get("branch", "main")
+    except Exception:
+        return "main"
+
+def _gh_api(path: str) -> str:
+    return f"https://api.github.com/repos/{_gh_repo()}/contents/{path}"
+
+def _gh_read(path: str) -> tuple:
+    """Returns (content_dict_or_None, sha_or_None)"""
+    r = _requests.get(_gh_api(path), headers=_gh_headers(), timeout=15)
+    if r.status_code == 404:
+        return None, None
+    if not r.ok:
+        return None, None
+    data = r.json()
+    raw  = _base64.b64decode(data["content"]).decode("utf-8")
+    return _json.loads(raw), data["sha"]
+
+def _gh_write(path: str, content: dict, message: str, sha=None) -> dict:
+    """Write JSON to GitHub. Pass sha to update existing file."""
+    encoded = _base64.b64encode(
+        _json.dumps(content, separators=(",", ":")).encode("utf-8")
+    ).decode("utf-8")
+    body = {
+        "message": message,
+        "content": encoded,
+        "branch":  _gh_branch(),
+    }
+    if sha:
+        body["sha"] = sha
+    r = _requests.put(_gh_api(path), headers=_gh_headers(),
+                      json=body, timeout=30)
+    if r.ok:
+        return {"ok": True, "msg": f"Written to {path}"}
+    return {"ok": False, "err": f"HTTP {r.status_code}: {r.text[:200]}"}
+
+
+def _github_save_replay(ticker: str, date_str: str, T: dict) -> dict:
+    """
+    Saves today's intraday bars + precomputed GEX snapshots to GitHub at:
+      replays/index.json          — manifest of all saved replays
+      replays/{ticker}_{date}.json — the actual replay data
+    """
+    if not _gh_repo():
+        return {"ok": False, "err": "No GitHub repo configured in st.secrets"}
+    if not _gh_headers():
+        return {"ok": False, "err": "No GitHub token configured in st.secrets"}
+
+    # ── Fetch intraday bars ────────────────────────────────────────────────
+    df_intra = fetch_intraday_data(ticker)
+    if df_intra.empty:
+        return {"ok": False, "err": "No intraday data available to save"}
+
+    # ── Fetch current options chain for GEX snapshots ─────────────────────
+    try:
+        _, _, raw_df = fetch_options_data(ticker, max_expirations=4)
+    except Exception as e:
+        return {"ok": False, "err": f"Could not fetch options chain: {e}"}
+
+    if raw_df.empty:
+        return {"ok": False, "err": "Options chain returned no data"}
+
+    # ── Compute GEX snapshots for every bar ───────────────────────────────
+    snaps = _precompute_replay_snapshots(raw_df, df_intra, ticker)
+
+    # ── Compute key levels for the saved replay ───────────────────────────
+    try:
+        spot = float(df_intra["close"].iloc[-1])
+        agg, _, _raw = fetch_options_data(ticker, max_expirations=1)
+        gflip, cwall, pwall, mpain = compute_key_levels(agg, spot, _raw) \
+            if not agg.empty else (spot, spot, spot, spot)
+        vtrig, mwall, _ = compute_intraday_levels(agg, spot) \
+            if not agg.empty else (spot, spot, 0.0)
+    except Exception:
+        spot  = float(df_intra["close"].iloc[-1])
+        gflip = cwall = pwall = mpain = vtrig = mwall = spot
+
+    # ── Serialise bars ─────────────────────────────────────────────────────
+    bars_out = []
+    for _, row in df_intra.iterrows():
+        bars_out.append({
+            "t": row["ts"].strftime("%H:%M"),
+            "o": round(float(row.get("open")  or 0), 2),
+            "h": round(float(row.get("high")  or 0), 2),
+            "l": round(float(row.get("low")   or 0), 2),
+            "c": round(float(row.get("close") or 0), 2),
+            "v": int(row.get("volume") or 0),
+        })
+
+    # ── Serialise GEX snapshots ────────────────────────────────────────────
+    snaps_out = []
+    for s in snaps:
+        if s is None or s.empty:
+            snaps_out.append([])
+        else:
+            snaps_out.append([
+                {"k": round(float(r["strike"]), 1),
+                 "g": round(float(r["gex_net"]), 6)}
+                for _, r in s.iterrows()
+            ])
+
+    # ── GEX magnitude per bar (for ramp) ──────────────────────────────────
+    gex_mag = [
+        round(float(s["gex_net"].abs().sum()), 6)
+        if (s is not None and not s.empty) else 0.0
+        for s in snaps
+    ]
+    opening_mag = max(gex_mag[0] if gex_mag else 0.0, 1e-9)
+
+    replay_doc = {
+        "ticker":      ticker,
+        "date":        date_str,
+        "saved_at":    datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+        "spot":        round(spot, 2),
+        "levels": {
+            "gamma_flip":  round(gflip, 2),
+            "call_wall":   round(cwall, 2),
+            "put_wall":    round(pwall, 2),
+            "max_pain":    round(mpain, 2),
+            "vol_trigger": round(vtrig, 2),
+            "open_price":  round(float(df_intra.iloc[0]["open"]), 2),
+        },
+        "bars":         bars_out,
+        "snaps":        snaps_out,
+        "gex_mag":      gex_mag,
+        "opening_mag":  opening_mag,
+    }
+
+    # ── Write replay file ──────────────────────────────────────────────────
+    file_path = f"replays/{ticker}_{date_str}.json"
+    _, existing_sha = _gh_read(file_path)
+    write_result = _gh_write(
+        path    = file_path,
+        content = replay_doc,
+        message = f"Save replay: {ticker} {date_str}",
+        sha     = existing_sha,
+    )
+    if not write_result.get("ok"):
+        return write_result
+
+    # ── Update index ───────────────────────────────────────────────────────
+    index, index_sha = _gh_read("replays/index.json")
+    if index is None:
+        index = {"replays": []}
+
+    # Remove old entry for same ticker+date if exists
+    index["replays"] = [
+        x for x in index["replays"]
+        if not (x["ticker"] == ticker and x["date"] == date_str)
+    ]
+    index["replays"].append({
+        "ticker":   ticker,
+        "date":     date_str,
+        "saved_at": replay_doc["saved_at"],
+        "bars":     len(bars_out),
+        "file":     file_path,
+    })
+    # Keep most recent 100 replays
+    index["replays"] = sorted(
+        index["replays"], key=lambda x: x["date"], reverse=True
+    )[:100]
+
+    _gh_write(
+        path    = "replays/index.json",
+        content = index,
+        message = f"Update replay index: {ticker} {date_str}",
+        sha     = index_sha,
+    )
+
+    return {"ok": True, "msg": f"{ticker} {date_str} — {len(bars_out)} bars saved"}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SAVED REPLAYS VIEWER
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=60, show_spinner=False)
+def _gh_load_index() -> list:
+    index, _ = _gh_read("replays/index.json")
+    if index is None:
+        return []
+    return index.get("replays", [])
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _gh_load_replay(file_path: str) -> dict:
+    data, _ = _gh_read(file_path)
+    return data or {}
+
+
+def _render_saved_replays(T: dict):
+
+    st.markdown('<div class="sec-head">Saved Replays</div>', unsafe_allow_html=True)
+
+    # ── Check secrets ──────────────────────────────────────────────────────
+    if not _gh_repo():
+        st.markdown(f"""
+        <div style="background:{T['bg1']};border:1px solid {T['amber']};
+                    border-left:3px solid {T['amber']};border-radius:4px;
+                    padding:16px 20px;margin:8px 0;">
+          <div style="font-family:'Barlow Condensed',sans-serif;font-size:16px;
+                      font-weight:700;letter-spacing:2px;color:{T['amber']};
+                      text-transform:uppercase;margin-bottom:8px;">GitHub Not Configured</div>
+          <div style="font-family:'Barlow',sans-serif;font-size:11px;
+                      color:{T['t2']};line-height:1.8;">
+            Add these to your Streamlit secrets:<br><br>
+            <code style="background:{T['bg2']};padding:8px 12px;border-radius:3px;
+                         display:block;font-size:10px;color:{T['green']};">
+            [github]<br>
+            token  = "ghp_yourtoken"<br>
+            repo   = "yourusername/yourrepo"<br>
+            branch = "main"
+            </code>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    # ── Load index ─────────────────────────────────────────────────────────
+    with st.spinner("Loading saved replays…"):
+        replays = _gh_load_index()
+
+    if not replays:
+        st.markdown(f"""
+        <div style="display:flex;flex-direction:column;align-items:center;
+                    justify-content:center;padding:80px 20px;
+                    background:{T['bg1']};border:1px solid {T['line2']};
+                    border-radius:6px;margin-top:10px;gap:12px;">
+          <div style="font-family:'Barlow Condensed',sans-serif;font-size:22px;
+                      font-weight:700;letter-spacing:3px;color:{T['t3']};
+                      text-transform:uppercase;">No Saved Replays Yet</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:10px;
+                      color:{T['t3']};letter-spacing:1px;text-align:center;
+                      line-height:2;">
+            Go to the ⏱ Replay tab during market hours<br>
+            and hit 💾 Save to store a session here.
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+        return
+
+    # ── Index table ────────────────────────────────────────────────────────
+    st.markdown(f'<div class="sub-head">Saved Sessions  ·  {len(replays)} replays</div>',
+                unsafe_allow_html=True)
+
+    # Group by ticker for filter
+    tickers_saved = sorted(set(r["ticker"] for r in replays))
+    _filter_cols  = st.columns([2, 6])
+    with _filter_cols[0]:
+        _ticker_filter = st.selectbox(
+            "Filter by ticker", ["All"] + tickers_saved,
+            key="saves_ticker_filter", label_visibility="collapsed"
+        )
+
+    filtered = replays if _ticker_filter == "All" \
+               else [r for r in replays if r["ticker"] == _ticker_filter]
+
+    # Render replay cards
+    for entry in filtered:
+        _date    = entry["date"]
+        _ticker  = entry["ticker"]
+        _bars    = entry.get("bars", "?")
+        _saved   = entry.get("saved_at", "")
+        _file    = entry["file"]
+
+        _card_key = f"load_{_ticker}_{_date}"
+        _col1, _col2, _col3, _col4 = st.columns([2, 2, 2, 1])
+
+        with _col1:
+            st.markdown(
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:13px;'
+                f'font-weight:600;color:{T["t1"]};padding-top:8px;">'
+                f'{_ticker} &nbsp; <span style="color:{T["amber"]}">{_date}</span></div>',
+                unsafe_allow_html=True
+            )
+        with _col2:
+            st.markdown(
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:10px;'
+                f'color:{T["t3"]};padding-top:10px;">{_bars} bars &nbsp;·&nbsp; {_saved}</div>',
+                unsafe_allow_html=True
+            )
+        with _col3:
+            pass
+        with _col4:
+            if st.button("▶ Load", key=_card_key, use_container_width=True):
+                st.session_state["saved_replay_file"]   = _file
+                st.session_state["saved_replay_ticker"] = _ticker
+                st.session_state["saved_replay_date"]   = _date
+                st.rerun()
+
+        st.markdown(
+            f'<div style="height:1px;background:{T["line"]};margin:2px 0 6px 0;"></div>',
+            unsafe_allow_html=True
+        )
+
+    # ── Replay player ──────────────────────────────────────────────────────
+    if "saved_replay_file" not in st.session_state:
+        return
+
+    _active_file   = st.session_state["saved_replay_file"]
+    _active_ticker = st.session_state["saved_replay_ticker"]
+    _active_date   = st.session_state["saved_replay_date"]
+
+    st.markdown(
+        f'<div class="sub-head">Replaying: {_active_ticker} · {_active_date}</div>',
+        unsafe_allow_html=True
+    )
+
+    with st.spinner(f"Loading {_active_ticker} {_active_date}…"):
+        replay_data = _gh_load_replay(_active_file)
+
+    if not replay_data:
+        st.error("Could not load replay data from GitHub.")
+        return
+
+    bars        = replay_data.get("bars", [])
+    snaps_raw   = replay_data.get("snaps", [])
+    gex_mag     = replay_data.get("gex_mag", [])
+    opening_mag = replay_data.get("opening_mag", 1.0)
+    levels      = replay_data.get("levels", {})
+    levels["ticker"] = _active_ticker
+    levels["date"]   = _active_date
+
+    if not bars:
+        st.warning("No bar data in this replay.")
+        return
+
+    # Pass directly into the existing JS replay widget
+    import json as _json2
+    css_vars = (
+        f":root{{"
+        f"--bg:{T['bg']};--bg1:{T['bg1']};--bg2:{T['bg2']};"
+        f"--t1:{T['t1']};--t2:{T['t2']};--t3:{T['t3']};"
+        f"--line:{T['line']};--line2:{T['line2']};"
+        f"--green:{T['green']};--red:{T['red']};--amber:{T['amber']};"
+        f"--violet:{T['violet']};"
+        f"}}"
+    )
+    theme_d = {
+        "bg": T["bg"], "bg1": T["bg1"], "bg2": T["bg2"],
+        "t1": T["t1"], "t2": T["t2"],  "t3": T["t3"],
+        "line": T["line"], "line2": T["line2"],
+        "green": T["green"], "red": T["red"], "amber": T["amber"],
+        "blue": T["blue"], "violet": T["violet"],
+        "pos": T["bar_pos"], "neg": T["bar_neg"],
+    }
+    data_blk = (
+        f"const BARS={_json2.dumps(bars, separators=(',',':'))};"
+        f"const SNAPS={_json2.dumps(snaps_raw, separators=(',',':'))};"
+        f"const GEX_MAG={_json2.dumps(gex_mag, separators=(',',':'))};"
+        f"const OPENING_MAG={_json2.dumps(opening_mag)};"
+        f"const LEVELS={_json2.dumps(levels, separators=(',',':'))};"
+        f"const TH={_json2.dumps(theme_d, separators=(',',':'))};"
+    )
+
+    html = _REPLAY_HTML.replace("/*CSS_VARS*/", css_vars, 1).replace("/*DATA*/", data_blk, 1)
+    _components.html(html, height=730, scrolling=False)
+
+    # Delete button
+    if st.button(f"🗑 Delete this replay", key="delete_replay_btn"):
+        with st.spinner("Deleting…"):
+            _, sha = _gh_read(_active_file)
+            if sha:
+                _requests.delete(
+                    _gh_api(_active_file),
+                    headers=_gh_headers(),
+                    json={
+                        "message": f"Delete replay {_active_ticker} {_active_date}",
+                        "sha": sha,
+                        "branch": _gh_branch(),
+                    },
+                    timeout=15,
+                )
+            # Remove from index
+            index, index_sha = _gh_read("replays/index.json")
+            if index:
+                index["replays"] = [
+                    x for x in index["replays"]
+                    if not (x["ticker"] == _active_ticker
+                            and x["date"] == _active_date)
+                ]
+                _gh_write("replays/index.json", index,
+                          f"Remove {_active_ticker} {_active_date} from index",
+                          sha=index_sha)
+            _gh_load_index.clear()
+            del st.session_state["saved_replay_file"]
+            del st.session_state["saved_replay_ticker"]
+            del st.session_state["saved_replay_date"]
+        st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EXPECTED MOVE
@@ -3133,10 +3545,10 @@ def dashboard():
     """, unsafe_allow_html=True)
 
     # ── Mode Buttons + Refresh Timer ───────────────────────────────────────
-    _modes_list  = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY"]
-    _labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay"]
-    _btn_cols = st.columns([1, 1, 1, 1, 1, 1])
-    for _col, _mode, _lbl in zip(_btn_cols[:5], _modes_list, _labels_list):
+    _modes_list  = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES"]
+_labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay", "📼 Saved"]
+_btn_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
+for _col, _mode, _lbl in zip(_btn_cols[:6], _modes_list, _labels_list):
         with _col:
             if st.button(_lbl, key=f"mode_btn_{_mode}",
                          type="primary" if st.session_state.radar_mode == _mode else "secondary"):
@@ -3168,7 +3580,7 @@ def dashboard():
         unsafe_allow_html=True
     )
 
-    if st.session_state.radar_mode not in ("GEX", "HEAT", "MOVE", "DAILY", "REPLAY"):
+    if st.session_state.radar_mode not in ("GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES", "BACKTEST"):
      st.session_state.radar_mode = "GEX"
 
     # ── DEX / VEX / CEX / IV Exposure Strip ────────────────────────────────
@@ -3575,7 +3987,30 @@ def dashboard():
             df_gex      = df,
             raw_df      = raw_df,
         )
-
+        # ── Save Replay button ────────────────────────────────────────
+        _sv_col1, _sv_col2, _ = st.columns([1, 1, 4])
+        with _sv_col1:
+            _save_label = f"💾 Save {datetime.date.today()} {asset_toggle}"
+            if st.button(_save_label, key="save_replay_btn"):
+                with st.spinner("Saving replay to GitHub…"):
+                    _save_result = _github_save_replay(
+                        ticker   = asset_toggle,
+                        date_str = str(datetime.date.today()),
+                        T        = T,
+                    )
+                if _save_result.get("ok"):
+                    st.success(f"Saved! {_save_result.get('msg','')}")
+                else:
+                    st.error(f"Save failed: {_save_result.get('err','unknown error')}")
+        with _sv_col2:
+            st.markdown(
+                f'<div style="font-family:JetBrains Mono,monospace;font-size:9px;'
+                f'color:{T["t3"]};padding-top:10px;">Saves price bars + GEX snapshots to GitHub</div>',
+                unsafe_allow_html=True
+            )
+    # ── SAVES ────────────────────────────────────────────────────────────
+    elif st.session_state.radar_mode == "SAVES":
+        _render_saved_replays(T)
     # ── KEY LEVELS TABLE ───────────────────────────────────────────────────
     st.markdown('<div class="sec-head">Key Levels</div>', unsafe_allow_html=True)
 
