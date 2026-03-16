@@ -3975,39 +3975,39 @@ for _col, _mode, _lbl in zip(_btn_cols[:6], _modes_list, _labels_list):
         _render_expected_move(asset_toggle, spot_price, df, raw_df, T)
     # ── REPLAY ────────────────────────────────────────────────────────────
     elif st.session_state.radar_mode == "REPLAY":
-        _render_replay_view(
-            ticker      = asset_toggle,
-            spot        = spot_price,
-            T           = T,
-            gamma_flip  = gamma_flip,
-            call_wall   = call_wall,
-            put_wall    = put_wall,
-            max_pain    = max_pain,
-            vol_trigger = vol_trigger,
-            df_gex      = df,
-            raw_df      = raw_df,
-        )
-        # ── Save Replay button ────────────────────────────────────────
-        _sv_col1, _sv_col2, _ = st.columns([1, 1, 4])
-        with _sv_col1:
-            _save_label = f"💾 Save {datetime.date.today()} {asset_toggle}"
-            if st.button(_save_label, key="save_replay_btn"):
-                with st.spinner("Saving replay to GitHub…"):
-                    _save_result = _github_save_replay(
-                        ticker   = asset_toggle,
-                        date_str = str(datetime.date.today()),
-                        T        = T,
-                    )
-                if _save_result.get("ok"):
-                    st.success(f"Saved! {_save_result.get('msg','')}")
-                else:
-                    st.error(f"Save failed: {_save_result.get('err','unknown error')}")
-        with _sv_col2:
-            st.markdown(
-                f'<div style="font-family:JetBrains Mono,monospace;font-size:9px;'
-                f'color:{T["t3"]};padding-top:10px;">Saves price bars + GEX snapshots to GitHub</div>',
-                unsafe_allow_html=True
+            _render_replay_view(
+                ticker      = asset_toggle,
+                spot        = spot_price,
+                T           = T,
+                gamma_flip  = gamma_flip,
+                call_wall   = call_wall,
+                put_wall    = put_wall,
+                max_pain    = max_pain,
+                vol_trigger = vol_trigger,
+                df_gex      = df,
+                raw_df      = raw_df,
             )
+            # ── Save Replay button ────────────────────────────────────────
+            _sv_col1, _sv_col2, _ = st.columns([1, 1, 4])
+            with _sv_col1:
+                _save_label = f"💾 Save {datetime.date.today()} {asset_toggle}"
+                if st.button(_save_label, key="save_replay_btn"):
+                    with st.spinner("Saving replay to GitHub…"):
+                        _save_result = _github_save_replay(
+                            ticker   = asset_toggle,
+                            date_str = str(datetime.date.today()),
+                            T        = T,
+                        )
+                    if _save_result.get("ok"):
+                        st.success(f"Saved! {_save_result.get('msg','')}")
+                    else:
+                        st.error(f"Save failed: {_save_result.get('err','unknown error')}")
+            with _sv_col2:
+                st.markdown(
+                    f'<div style="font-family:JetBrains Mono,monospace;font-size:9px;'
+                    f'color:{T["t3"]};padding-top:10px;">Saves price bars + GEX snapshots to GitHub</div>',
+                    unsafe_allow_html=True
+                )
     # ── SAVES ────────────────────────────────────────────────────────────
     elif st.session_state.radar_mode == "SAVES":
         _render_saved_replays(T)
