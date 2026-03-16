@@ -3545,43 +3545,43 @@ def dashboard():
     """, unsafe_allow_html=True)
 
     # ── Mode Buttons + Refresh Timer ───────────────────────────────────────
-    _modes_list  = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES"]
-_labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay", "📼 Saved"]
-_btn_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
-for _col, _mode, _lbl in zip(_btn_cols[:6], _modes_list, _labels_list):
-        with _col:
-            if st.button(_lbl, key=f"mode_btn_{_mode}",
-                         type="primary" if st.session_state.radar_mode == _mode else "secondary"):
-                st.session_state.radar_mode = _mode
-                if _mode == "REPLAY":
-                    st.session_state.replay_playing = False
-                st.rerun()
+        _modes_list  = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES"]
+        _labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay", "📼 Saved"]
+        _btn_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
+        for _col, _mode, _lbl in zip(_btn_cols[:6], _modes_list, _labels_list):
+            with _col:
+                if st.button(_lbl, key=f"mode_btn_{_mode}",
+                             type="primary" if st.session_state.radar_mode == _mode else "secondary"):
+                    st.session_state.radar_mode = _mode
+                    if _mode == "REPLAY":
+                        st.session_state.replay_playing = False
+                    st.rerun()
 
-     with _btn_cols[5]:
-        st.markdown(f"""
-        <div style="display:flex; justify-content:flex-end; align-items:center; height:38px;">
-          <div style="
-            display:inline-flex; align-items:center; gap:7px;
-            background:{T['bg1']}; border:1px solid {T['line2']};
-            border-radius:20px; padding:5px 13px;
-            font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:500;
-            letter-spacing:1px; color:var(--text-2); white-space:nowrap;">
-            <div style="width:5px;height:5px;border-radius:50%;background:var(--amber);flex-shrink:0;
-                        animation:tpblink 1s ease-in-out infinite;"></div>
-            REFRESH <span id="gex-cdown" style="color:var(--amber);font-weight:600;">{AUTO_REFRESH_SECONDS}</span>s
-          </div>
-        </div>
-        <style>@keyframes tpblink{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>
-        """, unsafe_allow_html=True)
+        with _btn_cols[6]:
+            st.markdown(f"""
+            <div style="display:flex; justify-content:flex-end; align-items:center; height:38px;">
+              <div style="
+                display:inline-flex; align-items:center; gap:7px;
+                background:{T['bg1']}; border:1px solid {T['line2']};
+                border-radius:20px; padding:5px 13px;
+                font-family:'JetBrains Mono',monospace; font-size:10px; font-weight:500;
+                letter-spacing:1px; color:var(--text-2); white-space:nowrap;">
+                <div style="width:5px;height:5px;border-radius:50%;background:var(--amber);flex-shrink:0;
+                            animation:tpblink 1s ease-in-out infinite;"></div>
+                REFRESH <span id="gex-cdown" style="color:var(--amber);font-weight:600;">{AUTO_REFRESH_SECONDS}</span>s
+              </div>
+            </div>
+            <style>@keyframes tpblink{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>
+            """, unsafe_allow_html=True)
 
-    import time as _time
-    st.markdown(
-        f'<div id="gex-refresh-signal" style="display:none">{_time.time()}</div>',
-        unsafe_allow_html=True
-    )
+        import time as _time
+        st.markdown(
+            f'<div id="gex-refresh-signal" style="display:none">{_time.time()}</div>',
+            unsafe_allow_html=True
+        )
 
-    if st.session_state.radar_mode not in ("GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES", "BACKTEST"):
-     st.session_state.radar_mode = "GEX"
+        if st.session_state.radar_mode not in ("GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES", "BACKTEST"):
+            st.session_state.radar_mode = "GEX"
 
     # ── DEX / VEX / CEX / IV Exposure Strip ────────────────────────────────
     _dex_col  = T["green"] if total_dex >= 0 else T["red"]
