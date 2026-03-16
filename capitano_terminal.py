@@ -2736,10 +2736,10 @@ def _render_expected_move(ticker: str, spot: float, df_gex, raw_df: pd.DataFrame
             hoverinfo="skip", showlegend=False,
         ))
 
+    _cone_layout = {**PLOTLY_BASE, "showlegend": True}
     fig_cone.update_layout(
-        **PLOTLY_BASE,
+        **_cone_layout,
         height=340,
-        showlegend=True,
         legend=dict(orientation="h", y=1.08, x=0,
                     font=dict(size=9, color=TEXT2, family="JetBrains Mono"),
                     bgcolor="rgba(0,0,0,0)"),
@@ -2884,10 +2884,10 @@ def _render_expected_move(ticker: str, spot: float, df_gex, raw_df: pd.DataFrame
                      annotation_text=f"  Near ATM IV {float(exp_df['atm_iv'].iloc[0])*100:.1f}%",
                      annotation_font_color=T["t3"], annotation_font_size=9)
 
+    _ts_layout = {**PLOTLY_BASE, "showlegend": True}
     fig_ts.update_layout(
-        **PLOTLY_BASE,
+        **_ts_layout,
         height=240,
-        showlegend=True,
         legend=dict(orientation="h", y=1.12, x=0,
                     font=dict(size=9, color=TEXT2, family="JetBrains Mono"),
                     bgcolor="rgba(0,0,0,0)"),
