@@ -3135,8 +3135,8 @@ def dashboard():
     # ── Mode Buttons + Refresh Timer ───────────────────────────────────────
     _modes_list  = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY"]
     _labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay"]
-    _btn_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
-    for _col, _mode, _lbl in zip(_btn_cols[:4], _modes_list, _labels_list):
+    _btn_cols = st.columns([1, 1, 1, 1, 1, 1])
+        for _col, _mode, _lbl in zip(_btn_cols[:5], _modes_list, _labels_list):
         with _col:
             if st.button(_lbl, key=f"mode_btn_{_mode}",
                          type="primary" if st.session_state.radar_mode == _mode else "secondary"):
