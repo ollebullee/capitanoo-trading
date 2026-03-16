@@ -3168,8 +3168,8 @@ def dashboard():
         unsafe_allow_html=True
     )
 
-    if st.session_state.radar_mode not in ("GEX", "HEAT", "DAILY", "REPLAY"):
-        st.session_state.radar_mode = "GEX"
+    if st.session_state.radar_mode not in ("GEX", "HEAT", "MOVE", "DAILY", "REPLAY"):
+     st.session_state.radar_mode = "GEX"
 
     # ── DEX / VEX / CEX / IV Exposure Strip ────────────────────────────────
     _dex_col  = T["green"] if total_dex >= 0 else T["red"]
