@@ -3557,7 +3557,7 @@ for _col, _mode, _lbl in zip(_btn_cols[:6], _modes_list, _labels_list):
                     st.session_state.replay_playing = False
                 st.rerun()
 
-    with _btn_cols[5]:
+     with _btn_cols[5]:
         st.markdown(f"""
         <div style="display:flex; justify-content:flex-end; align-items:center; height:38px;">
           <div style="
