@@ -3544,10 +3544,10 @@ def dashboard():
     </div>
     """, unsafe_allow_html=True)
     
-        _modes_list = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES"]
-        _labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay", "Saved"]
-        _btn_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
-        for _col, _mode, _lbl in zip(_btn_cols[:6], _modes_list, _labels_list):
+    _modes_list = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES"]
+    _labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay", "Saved"]
+    _btn_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
+    for _col, _mode, _lbl in zip(_btn_cols[:6], _modes_list, _labels_list):
             with _col:
                 if st.button(_lbl, key=f"mode_btn_{_mode}",
                              type="primary" if st.session_state.radar_mode == _mode else "secondary"):
@@ -3556,7 +3556,7 @@ def dashboard():
                         st.session_state.replay_playing = False
                     st.rerun()
 
-        with _btn_cols[6]:
+    with _btn_cols[6]:
             st.markdown(f"""
             <div style="display:flex; justify-content:flex-end; align-items:center; height:38px;">
               <div style="
@@ -3573,13 +3573,13 @@ def dashboard():
             <style>@keyframes tpblink{{0%,100%{{opacity:1}}50%{{opacity:0.3}}}}</style>
             """, unsafe_allow_html=True)
 
-        import time as _time
-        st.markdown(
+    import time as _time
+    st.markdown(
             f'<div id="gex-refresh-signal" style="display:none">{_time.time()}</div>',
             unsafe_allow_html=True
         )
 
-        if st.session_state.radar_mode not in ("GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES", "BACKTEST"):
+    if st.session_state.radar_mode not in ("GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES", "BACKTEST"):
             st.session_state.radar_mode = "GEX"
 
     # ── DEX / VEX / CEX / IV Exposure Strip ────────────────────────────────
