@@ -3543,7 +3543,7 @@ def dashboard():
       </div>
     </div>
     """, unsafe_allow_html=True)
-        # ── Mode Buttons + Refresh Timer ───────────────────────────────────────
+    
         _modes_list = ["GEX", "HEAT", "MOVE", "DAILY", "REPLAY", "SAVES"]
         _labels_list = ["OI GEX", "Heatmap", "Exp. Move", "Daily Levels", "⏱ Replay", "Saved"]
         _btn_cols = st.columns([1, 1, 1, 1, 1, 1, 1])
